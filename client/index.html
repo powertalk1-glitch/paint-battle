@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>漆彈塗地大亂鬥 - 極限特技與多模式修復版</title>
+    <!-- 引入 Tailwind CSS 用於現代化外觀配置 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.socket.io/4.7.0/socket.io.min.js"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #0b0f19;
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: none;
+        }
+        /* 隱藏滾動條 */
+        ::-webkit-scrollbar {
+            display: none;
+        }
+        /* 虛擬搖桿底座樣式 */
+        .joystick-container {
+            width: 120px;
+            height: 120px;
+            background: rgba(255, 255, 255, 0.08);
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            border-radius: 50%;
+            position: absolute;
+            bottom: 40px;
+            display: none; /* 由觸控動態啟動 */
+            justify-content: center;
+            align-items: center;
+            touch-action: none;
+            backdrop-filter: blur(8px);
+            z-index: 40;
+        }
+        /* 倒數覆蓋層樣式 */
+        .countdown-overlay {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            background: rgba(0,0,0,0.6);
+        }
+        .countdown-overlay.show {
+            display: flex;
+        }
+        .countdown-text {
+            font-size: 8rem;
+            font-weight: 900;
+            color: white;
+            text-shadow: 0 0 40px rgba(255,255,255,0.6), 0 0 80px rgba(255,255,255,0.3);
+            animation: countPop 0.8s ease-out forwards;
+        }
+        @keyframes countPop {
+            0% { transform: scale(2.5); opacity: 0; }
+            40% { transform: scale(1); opacity: 1; }
+            100% { transform: scale(0.9); opacity: 1; }
+        }
+        /* 連線設定區樣式 */
+        .online-section {
+            display: none;
+        }
+        .online-section.show {
+            display: block;
+        }
+        .online-input {
+            background: rgba(30,41,59,0.8);
+            border: 1px solid rgba(148,163,184,0.3);
+            border-radius: 0.75rem;
+            padding: 0.6rem 1rem;
+            color: white;
+            width: 100%;
+            outline: none;
+            transition: border 0.2s;
+        }
+        .online-input:focus {
+            border-color: #f43f5e;
+        }
+        .online-btn {
+            padding: 0.5rem 1.2rem;
+            border-radius: 0.75rem;
+            font-weight: 700;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+        .online-btn:hover {
+            transform: scale(1.03);
+        }
+        .online-btn:active {
+            transform: scale(0.97);
+        }
+        /* 遠端玩家名稱標籤 */
+        .player-tag {
+            position: absolute;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 10px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        /* 虛擬搖桿按鈕樣式 */
+        .joystick-knob {
+            width: 52px;
+            height: 52px;
+            background: rgba(255, 255, 255, 0.9);
+            box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+            border-radius: 50%;
+            position: absolute;
+            transition: transform 0.05s ease-out;
+        }
+    </style>
+</head>
+<body class="w-full h-full flex flex-col justify-between items-center select-none text-white">
+
+    <!-- ⏸ 頂部暫停按鈕 (左上角懸浮) -->
+    <button onclick="pauseGame()" id="btn-pause" class="absolute top-4 left-4 w-12 h-12 bg-slate-950/80 backdrop-blur-md border border-slate-800 rounded-xl flex items-center justify-center pointer-events-auto active:scale-95 transition-all z-40 cursor-pointer text-white text-xl shadow-2xl">
+        ⏸
+    </button>
+
+    <!-- 🏆 頂部動態戰況資訊列 (會由 JS 自動根據模式重構排版) -->
+    <div id="top-bar" class="absolute top-4 left-1/2 transform -translate-x-1/2 w-[72%] max-w-2xl bg-slate-950/80 backdrop-blur-md px-6 py-3 border border-slate-800 rounded-2xl z-30 shadow-2xl">
+        <div id="top-bar-content" class="w-full flex items-center justify-between">
+            <!-- 預設排版，開始後會由 JS 重新渲染 -->
+        </div>
+    </div>
+
+    <!-- 遊戲全螢幕 Canvas 容器 -->
+    <div class="relative w-full h-full overflow-hidden">
+        <canvas id="gameCanvas" class="block w-full h-full bg-slate-950"></canvas>
+        
+        <!-- 擊殺消息廣播 -->
+        <div id="kill-feed" class="absolute top-24 left-1/2 transform -translate-x-1/2 flex flex-col space-y-1.5 items-center pointer-events-none z-30"></div>
+
+        <!-- 玩家重生倒數 UI -->
+        <div id="respawn-overlay" class="absolute inset-0 bg-slate-950/85 backdrop-blur-sm hidden flex-col items-center justify-center z-50 text-center">
+            <h2 class="text-rose-500 text-4xl font-black mb-2 animate-bounce tracking-wide">您被擊倒了！</h2>
+            <p class="text-slate-300 mb-4 text-sm">正在重新調配墨水...</p>
+            <div class="relative w-24 h-24 flex items-center justify-center">
+                <svg class="w-full h-full transform -rotate-90">
+                    <circle cx="48" cy="48" r="40" stroke="#334155" stroke-width="8" fill="transparent" />
+                    <circle id="respawn-circle" cx="48" cy="48" r="40" stroke="#f43f5e" stroke-width="8" fill="transparent" stroke-dasharray="251.2" stroke-dashoffset="0" />
+                </svg>
+                <span id="respawn-timer" class="absolute text-3xl font-black text-white">3</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 倒數覆蓋層 (3, 2, 1, GO!) -->
+    <div id="countdown-overlay" class="countdown-overlay">
+        <div id="countdown-text" class="countdown-text"></div>
+    </div>
+
+    <!-- 左右虛擬搖桿元件 -->
+    <div id="joystick-left" class="joystick-container left-12">
+        <div id="knob-left" class="joystick-knob"></div>
+    </div>
+    <div id="joystick-right" class="joystick-container right-12">
+        <div id="knob-right" class="joystick-knob"></div>
+    </div>
+
+    <!-- 💥 行動端特化：特殊大招技能按鍵 (位於右搖桿左上方) -->
+<div id="btn-special" class="absolute bottom-28 right-44 w-20 h-20 bg-slate-900/90 border-2 border-yellow-500 rounded-full flex flex-col items-center justify-center pointer-events-auto active:scale-90 active:bg-yellow-500/20 transition-all z-50 cursor-pointer shadow-[0_0_15px_rgba(234,179,8,0.3)] select-none">
+        <span class="text-[9px] text-yellow-400 font-black tracking-tighter uppercase">Special</span>
+        <span id="skill-btn-name" class="text-xs text-white font-black tracking-wider text-center px-1">特殊技能</span>
+        <!-- 冷卻遮罩層 -->
+        <div id="skill-cooldown-overlay" class="absolute inset-0 bg-slate-950/85 rounded-full flex items-center justify-center text-white font-black text-lg hidden">5s</div>
+    </div>
+
+    <!-- 🎮 大廳：模式與職業選擇畫面 -->
+    <div id="lobby-screen" class="fixed inset-0 bg-slate-950/98 flex flex-col items-center justify-center z-50 p-6 overflow-y-auto">
+        <div class="max-w-4xl w-full text-center space-y-6 my-auto">
+            <div class="space-y-1">
+                <h1 class="text-4xl md:text-6xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-rose-500 via-amber-400 to-cyan-500">
+                    漆彈大亂鬥：修正完備版
+                </h1>
+                <p class="text-slate-400 text-sm md:text-base">單機 2.5D 鏡頭跟隨 — 全職業王牌特技與多人數戰役開放！</p>
+            </div>
+
+            <!-- 連線模式切換 -->
+            <div class="space-y-2">
+                <div class="flex justify-center gap-3">
+                    <button onclick="setOnlineMode(false)" id="btn-offline" class="px-6 py-2 bg-rose-500 text-white font-bold rounded-full text-sm transition-all border-2 border-rose-500">
+                        🎮 單機模式
+                    </button>
+                    <button onclick="setOnlineMode(true)" id="btn-online" class="px-6 py-2 bg-slate-800 text-slate-400 font-bold rounded-full text-sm transition-all border-2 border-transparent">
+                        🌐 多人連線
+                    </button>
+                </div>
+                <!-- 連線設定區 -->
+                <div id="online-settings" class="online-section space-y-3 bg-slate-900/60 p-4 rounded-2xl border border-slate-800 max-w-xl mx-auto">
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="space-y-1 text-left">
+                            <label class="text-xs text-slate-400">暱稱</label>
+                            <input type="text" id="nickname-input" class="online-input" value="玩家" placeholder="輸入暱稱">
+                        </div>
+                        <div class="space-y-1 text-left">
+                            <label class="text-xs text-slate-400">房間 ID</label>
+                            <input type="text" id="room-id-input" class="online-input" value="" placeholder="輸入房間 ID">
+                        </div>
+                    </div>
+                    <div class="flex gap-2 justify-center">
+                        <button onclick="createRoom()" class="online-btn bg-emerald-600 text-white px-6">創建房間</button>
+                        <button onclick="joinRoom()" class="online-btn bg-cyan-600 text-white px-6">加入房間</button>
+                        <button onclick="disconnectFromServer()" id="btn-disconnect" class="online-btn bg-rose-700 text-white px-4 hidden">斷開連線</button>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <div class="space-y-1 w-full">
+                            <label class="text-xs text-slate-400">伺服器位置</label>
+                            <input type="text" id="server-url-input" class="online-input" value="localhost:3000" placeholder="localhost:3000">
+                        </div>
+                        <div class="text-xs text-slate-400 ml-3 whitespace-nowrap">
+                            <span>狀態：</span>
+                            <span id="connection-status" class="text-slate-500 font-bold">已離線</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 💥 戰役模式選擇 -->
+            <div class="space-y-3">
+                <h3 class="text-sm md:text-base font-bold text-yellow-400 tracking-widest uppercase">第一步：請選擇對戰模式</h3>
+                <div class="grid grid-cols-4 gap-3 max-w-2xl mx-auto">
+                    <button onclick="selectMode('2v2')" id="btn-mode-2v2" class="mode-card py-2 px-3 bg-slate-900 border-2 border-rose-500 text-white font-bold rounded-xl text-sm transition-all">
+                        2 VS 2
+                    </button>
+                    <button onclick="selectMode('3v3')" id="btn-mode-3v3" class="mode-card py-2 px-3 bg-slate-900 border-2 border-transparent text-slate-400 font-bold rounded-xl text-sm transition-all">
+                        3 VS 3
+                    </button>
+                    <button onclick="selectMode('4v4')" id="btn-mode-4v4" class="mode-card py-2 px-3 bg-slate-900 border-2 border-transparent text-slate-400 font-bold rounded-xl text-sm transition-all">
+                        4 VS 4
+                    </button>
+                    <button onclick="selectMode('quad')" id="btn-mode-quad" class="mode-card py-2 px-3 bg-slate-900 border-2 border-transparent text-slate-400 font-bold rounded-xl text-sm transition-all">
+                        四隊大混戰
+                    </button>
+                </div>
+            </div>
+
+            <!-- 職業選擇區 -->
+            <div class="space-y-3">
+                <h3 class="text-sm md:text-base font-bold text-slate-300 tracking-widest uppercase">第二步：選擇你的作戰職業</h3>
+                <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <!-- 步槍 -->
+                    <button onclick="selectClass('rifle')" id="btn-rifle" class="class-card bg-slate-900/60 border-2 border-rose-500 text-white rounded-2xl p-4 flex flex-col items-center transition-all transform hover:scale-105 shadow-md">
+                        <div class="w-12 h-12 rounded-full bg-rose-500/20 flex items-center justify-center text-rose-400 mb-2 font-black">步</div>
+                        <h4 class="font-bold text-base text-rose-400">萬能步槍 (Rifle)</h4>
+                        <p class="text-[11px] text-slate-400 mt-1 leading-relaxed">射速快。大招：<b>【多重導彈】</b><br>發射4枚巡航導彈，2秒後從天砸向敵人！</p>
+                    </button>
+
+                    <!-- 坦克 -->
+                    <button onclick="selectClass('tank')" id="btn-tank" class="class-card bg-slate-900/60 border-2 border-transparent text-slate-400 rounded-2xl p-4 flex flex-col items-center transition-all transform hover:scale-105 shadow-md">
+                        <div class="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center text-amber-400 mb-2 font-black">坦</div>
+                        <h4 class="font-bold text-base text-amber-400">重裝坦克 (Tank)</h4>
+                        <p class="text-[11px] text-slate-400 mt-1 leading-relaxed">散彈強。大招：<b>【鯊魚坐騎】</b><br>無敵直線超高速狂奔開路，定點劇烈爆炸！</p>
+                    </button>
+
+                    <!-- 狙擊槍 -->
+                    <button onclick="selectClass('sniper')" id="btn-sniper" class="class-card bg-slate-900/60 border-2 border-transparent text-slate-400 rounded-2xl p-4 flex flex-col items-center transition-all transform hover:scale-105 shadow-md">
+                        <div class="w-12 h-12 rounded-full bg-cyan-500/10 flex items-center justify-center text-cyan-400 mb-2 font-black">狙</div>
+                        <h4 class="font-bold text-base text-cyan-400">重砲狙擊 (Sniper)</h4>
+                        <p class="text-[11px] text-slate-400 mt-1 leading-relaxed">射程遠。大招：<b>【貫穿極光】</b><br>瞬間射出一道橫掃大地圖的超寬雷射路徑。</p>
+                    </button>
+
+                    <!-- 小刀/滾刷 -->
+                    <button onclick="selectClass('knife')" id="btn-knife" class="class-card bg-slate-900/60 border-2 border-transparent text-slate-400 rounded-2xl p-4 flex flex-col items-center transition-all transform hover:scale-105 shadow-md">
+                        <div class="w-12 h-12 rounded-full bg-emerald-500/10 flex items-center justify-center text-emerald-400 mb-2 font-black">刷</div>
+                        <h4 class="font-bold text-base text-emerald-400 font-black">神速滾刷 (Roller)</h4>
+                        <p class="text-[11px] text-slate-400 mt-1 leading-relaxed">橫劈塗墨。大招：<b>【凌空墜擊】</b><br>一躍升空，短暫無敵，隨後重砸地面引發巨爆！</p>
+                    </button>
+                </div>
+            </div>
+
+            <!-- 控制說明 -->
+            <div class="bg-slate-900/40 p-3 rounded-xl max-w-lg mx-auto text-left border border-slate-800 text-xs text-slate-400 space-y-1">
+                <span class="font-bold text-slate-200 block mb-0.5">🎮 操作指南：</span>
+                <p>• <b>平板觸控</b>：左半螢幕移動，右半螢幕瞄準。按右下角大招鍵施放特技！</p>
+                <p>• <b>電腦鍵盤</b>：<kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200">W</kbd><kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200">A</kbd><kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200">S</kbd><kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200">D</kbd> 移動，滑鼠瞄準射擊，按 <kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200">Space</kbd> 或 <kbd class="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200">Shift</kbd> 釋放大招！</p>
+            </div>
+
+            <!-- 開始按鈕 -->
+            <button onclick="startGame()" class="px-16 py-4 bg-gradient-to-r from-rose-500 to-amber-500 text-white font-black text-2xl rounded-full shadow-[0_0_25px_rgba(244,63,94,0.4)] hover:shadow-[0_0_35px_rgba(244,63,94,0.6)] transform hover:scale-105 active:scale-95 transition-all">
+                進入戰場
+            </button>
+        </div>
+    </div>
+
+    <!-- ⏸ 暫停選單 Overlay -->
+    <div id="pause-overlay" class="fixed inset-0 bg-slate-950/85 backdrop-blur-md hidden flex-col items-center justify-center z-50 text-center space-y-6">
+        <h2 class="text-white text-4xl font-black tracking-widest animate-pulse">遊戲暫停</h2>
+        <p class="text-slate-400 text-sm">所有行動已鎖定</p>
+        <div class="flex flex-col space-y-4 w-64">
+            <button onclick="resumeGame()" class="py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white font-black rounded-xl shadow-lg active:scale-95 transition-all">繼續遊戲</button>
+            <button onclick="restartGame()" class="py-3 bg-slate-800 border border-slate-700 text-white font-black rounded-xl active:scale-95 transition-all">重新開始</button>
+            <button onclick="leaveGame()" class="py-3 bg-rose-600 text-white font-black rounded-xl active:scale-95 transition-all">返回大廳</button>
+        </div>
+    </div>
+
+    <!-- 🏆 結算畫面 -->
+    <div id="gameover-screen" class="fixed inset-0 bg-slate-950/98 hidden flex-col items-center justify-center z-50 p-6">
+        <div class="max-w-md w-full text-center space-y-6">
+            <div>
+                <h1 id="result-title" class="text-5xl font-black tracking-widest text-yellow-400 animate-bounce">
+                    MATCH FINISHED
+                </h1>
+                <p class="text-slate-400 mt-2">大地圖塗地百分比結算</p>
+            </div>
+
+            <!-- 勝負分數板 -->
+            <div id="final-scoreboard-container" class="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 text-left">
+                <!-- 動態注入 -->
+            </div>
+
+            <!-- 個人數據 -->
+            <div class="grid grid-cols-2 gap-4">
+                <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50 text-white">
+                    <span class="text-slate-400 text-xs block">擊殺次數</span>
+                    <span id="stat-kills" class="text-2xl font-black text-yellow-400">0</span>
+                </div>
+                <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800/50 text-white">
+                    <span class="text-slate-400 text-xs block">陣亡次數</span>
+                    <span id="stat-deaths" class="text-2xl font-black text-rose-500">0</span>
+                </div>
+            </div>
+
+            <button onclick="resetToLobby()" class="w-full py-4 bg-slate-800 hover:bg-slate-700 text-white font-bold rounded-2xl border border-slate-700 transition-all">
+                返回大廳
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- SOCKET.IO 多人連線全域變數 ---
+        let socket = null;
+        let isOnline = false;
+        let myPlayerId = null;
+        let remotePlayers = {};
+        let isRoomHost = false;
+        let SERVER_URL = 'http://localhost:3000';
+        let myNickname = '玩家';
+        let roomPlayers = [];
+        let scorePercent = { red: '0.0', blue: '0.0', green: '0.0', yellow: '0.0' };
+
+        // --- CLASS PROFILES ---
+        const CLASS_PROFILES = {
+            rifle: { maxHp: 100, speed: 4.2, bulletDamage: 18, bulletRange: 480, shootCooldown: 5, paintRadius: 16, skillCd: 420, desc: '步槍', skillName: '多重導彈' },
+            tank: { maxHp: 180, speed: 3.0, bulletDamage: 14, bulletRange: 320, shootCooldown: 8, paintRadius: 20, skillCd: 540, desc: '坦克', skillName: '鯊魚坐騎' },
+            sniper: { maxHp: 70, speed: 2.8, bulletDamage: 65, bulletRange: 900, shootCooldown: 24, paintRadius: 14, skillCd: 480, desc: '狙擊', skillName: '貫穿極光' },
+            knife: { maxHp: 90, speed: 4.8, bulletDamage: 40, bulletRange: 110, shootCooldown: 18, paintRadius: 55, skillCd: 360, desc: '滾刷', skillName: '凌空墜擊' }
+        };
+
+        // --- 模式選擇控制 ---
+        function selectMode(mode) {
+            currentMode = mode; 
+            initAudio();
+            document.querySelectorAll('.mode-card').forEach(card => {
+                card.classList.remove('border-rose-500', 'text-white');
+                card.classList.add('border-transparent', 'text-slate-400');
+            });
+            const activeCard = document.getElementById(`btn-mode-${mode}`);
+            if (activeCard) {
+                activeCard.classList.remove('border-transparent', 'text-slate-400');
+                activeCard.classList.add('border-rose-500', 'text-white');
+            }
+        }
+
+        function selectClass(type) {
+            selectedClassType = type;
+            initAudio();
+            document.querySelectorAll('.class-card').forEach(card => {
+                card.classList.remove('border-rose-500', 'text-white');
+                card.classList.add('border-transparent', 'text-slate-400');
+            });
+            const activeCard = document.getElementById(`btn-${type}`);
+            if (activeCard) {
+                activeCard.classList.remove('border-transparent', 'text-slate-400');
+                activeCard.classList.add('border-rose-500', 'text-white');
+            }
+        }
+
+        // --- 多人連線模式切換 ---
+        function setOnlineMode(online) {
+            isOnline = online;
+            const btnOff = document.getElementById('btn-offline');
+            const btnOn = document.getElementById('btn-online');
+            const settings = document.getElementById('online-settings');
+            if (online) {
+                btnOff.className = 'px-6 py-2 bg-slate-800 text-slate-400 font-bold rounded-full text-sm transition-all border-2 border-transparent';
+                btnOn.className = 'px-6 py-2 bg-rose-500 text-white font-bold rounded-full text-sm transition-all border-2 border-rose-500';
+                settings.classList.add('show');
+            } else {
+                btnOff.className = 'px-6 py-2 bg-rose-500 text-white font-bold rounded-full text-sm transition-all border-2 border-rose-500';
+                btnOn.className = 'px-6 py-2 bg-slate-800 text-slate-400 font-bold rounded-full text-sm transition-all border-2 border-transparent';
+                settings.classList.remove('show');
+                if (socket && socket.connected) {
+                    disconnectFromServer();
+                }
+            }
+        }
+
+        // --- SOCKET.IO 連線函數 ---
+        function connectToServer(url) {
+            if (socket && socket.connected) return;
+            if (!url) url = SERVER_URL;
+            if (!url.startsWith('http')) url = 'http://' + url;
+            SERVER_URL = url;
+            myNickname = document.getElementById('nickname-input').value || '玩家';
+            try {
+                socket = io(SERVER_URL, {
+                    transports: ['websocket', 'polling'],
+                    reconnection: true,
+                    reconnectionAttempts: 5,
+                    reconnectionDelay: 2000
+                });
+                socket.on('connect', () => {
+                    myPlayerId = socket.id;
+                    setConnectionStatus('connected');
+                    document.getElementById('btn-disconnect').classList.remove('hidden');
+                });
+                socket.on('disconnect', () => {
+                    setConnectionStatus('disconnected');
+                    document.getElementById('btn-disconnect').classList.add('hidden');
+                    socket = null;
+                    isOnline = false;
+                    myPlayerId = null;
+                    roomPlayers = [];
+                    remotePlayers = {};
+                });
+                socket.on('connect_error', (err) => {
+                    console.error('連線錯誤:', err.message);
+                    setConnectionStatus('disconnected');
+                    document.getElementById('btn-disconnect').classList.add('hidden');
+                });
+                // 成功加入房間
+                socket.on('room_joined', (data) => {
+                    myPlayerId = data.playerId;
+                    roomPlayers = data.players || [];
+                    isRoomHost = (roomPlayers.length > 0 && roomPlayers[0].id === myPlayerId);
+                    setConnectionStatus('in_room');
+                    updateRoomPlayerList();
+                });
+                // 其他玩家加入
+                socket.on('player_joined', (data) => {
+                    if (data.id && !roomPlayers.find(p => p.id === data.id)) {
+                        roomPlayers.push({ id: data.id, name: data.name || '未知', classType: data.classType, team: data.team });
+                    }
+                    updateRoomPlayerList();
+                });
+                // 其他玩家離開
+                socket.on('player_left', (data) => {
+                    roomPlayers = roomPlayers.filter(p => p.id !== data.id);
+                    delete remotePlayers[data.id];
+                    updateRoomPlayerList();
+                });
+                // 遊戲開始倒數
+                socket.on('game_start', (data) => {
+                    setConnectionStatus('playing');
+                    if (data.countdown) {
+                        // 在多人模式中，收到 game_start 後啟動遊戲
+                        if (isOnline) {
+                            startGame();
+                        }
+                        startCountdown(data.countdown);
+                    }
+                });
+                // 遊戲狀態更新 (來自伺服器 GameLoop)
+                socket.on('game_state', (data) => {
+                    if (!data || !data.entities) return;
+                    remotePlayers = {};
+                    const playerState = {};
+                    data.entities.forEach(ent => {
+                        if (ent.id === myPlayerId) {
+                            playerState.x = ent.x;
+                            playerState.y = ent.y;
+                            playerState.hp = ent.hp;
+                            playerState.isDead = ent.isDead;
+                            playerState.angle = ent.angle;
+                        } else {
+                            remotePlayers[ent.id] = {
+                                id: ent.id,
+                                name: ent.name || '未知',
+                                classType: ent.classType,
+                                team: ent.team,
+                                x: ent.x,
+                                y: ent.y,
+                                angle: ent.angle,
+                                hp: ent.hp,
+                                isDead: ent.isDead,
+                                vx: ent.vx,
+                                vy: ent.vy
+                            };
+                        }
+                    });
+                    if (player && playerState.x !== undefined) {
+                        player.x = playerState.x;
+                        player.y = playerState.y;
+                        player.hp = playerState.hp;
+                        player.isDead = playerState.isDead;
+                        player.angle = playerState.angle;
+                    }
+                    if (data.gameTime !== undefined) {
+                        gameTime = data.gameTime;
+                        updateTimerUI();
+                    }
+                    if (data.scores) {
+                        scorePercent = data.scores;
+                    }
+                });
+                // 子彈生成 (繪製用)
+                socket.on('bullet_spawn', (data) => {
+                    // 伺服器子彈由伺服器模擬，客戶端可選用伺服器子彈或自己產生視覺
+                });
+                // 遊戲結束
+                socket.on('game_over', (data) => {
+                    if (data.winner) {
+                        const title = document.getElementById('result-title');
+                        if (title) {
+                            if (data.winner === 'red') { title.innerText = 'VICTORY !!'; title.className = 'text-5xl font-black tracking-widest text-emerald-400 animate-pulse'; }
+                            else if (data.winner === 'blue') { title.innerText = 'DEFEAT...'; title.className = 'text-5xl font-black tracking-widest text-rose-500'; }
+                            else { title.innerText = 'DRAW'; title.className = 'text-5xl font-black tracking-widest text-yellow-400'; }
+                        }
+                    }
+                    endGame();
+                });
+            } catch (e) {
+                console.error('無法建立連線:', e);
+                setConnectionStatus('disconnected');
+            }
+        }
+
+        function disconnectFromServer() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+            isOnline = false;
+            isRoomHost = false;
+            myPlayerId = null;
+            remotePlayers = {};
+            roomPlayers = [];
+            setConnectionStatus('disconnected');
+            document.getElementById('btn-disconnect').classList.add('hidden');
+        }
+
+        function setConnectionStatus(status) {
+            const el = document.getElementById('connection-status');
+            if (!el) return;
+            if (status === 'connected') {
+                el.innerText = '已連線';
+                el.className = 'text-emerald-400 font-bold';
+            } else if (status === 'in_room') {
+                el.innerText = '已加入房間';
+                el.className = 'text-cyan-400 font-bold';
+            } else if (status === 'playing') {
+                el.innerText = '遊戲中';
+                el.className = 'text-yellow-400 font-bold';
+            } else {
+                el.innerText = '已離線';
+                el.className = 'text-slate-500 font-bold';
+            }
+        }
+
+        function createRoom() {
+            if (!socket || !socket.connected) {
+                const url = document.getElementById('server-url-input').value || 'localhost:3000';
+                connectToServer(url);
+            }
+            const roomId = document.getElementById('room-id-input').value || '';
+            myNickname = document.getElementById('nickname-input').value || '玩家';
+            setTimeout(() => {
+                if (socket && socket.connected) {
+                    socket.emit('join_room', {
+                        roomId: roomId,
+                        playerName: myNickname,
+                        classType: selectedClassType || 'rifle'
+                    });
+                }
+            }, 500);
+        }
+
+        function joinRoom() {
+            createRoom(); // 與創建房間相同 API，伺服器若無此 ID 會自動建立
+        }
+
+        function updateRoomPlayerList() {
+            const el = document.getElementById('top-bar-content');
+            if (!el || !isOnline) return;
+            let html = '<div class="flex items-center gap-2 text-xs">';
+            html += '<span class="text-slate-400">👥 房間：</span>';
+            roomPlayers.forEach(p => {
+                const isMe = p.id === myPlayerId;
+                html += '<span class="' + (isMe ? 'text-rose-400 font-bold' : 'text-slate-200') + '">' + (isMe ? '👑 ' : '') + (p.nickname || '未知') + '</span>';
+                html += '<span class="text-slate-600">|</span>';
+            });
+            html += '<span class="text-slate-500">共 ' + roomPlayers.length + ' 人</span>';
+            html += '</div>';
+            el.innerHTML = html;
+        }
+
+        function startCountdown(seconds) {
+            const overlay = document.getElementById('countdown-overlay');
+            const textEl = document.getElementById('countdown-text');
+            if (!overlay || !textEl) return;
+            const steps = seconds || [3,2,1,'GO!'];
+            let idx = 0;
+            overlay.classList.add('show');
+            const showNext = () => {
+                if (idx >= steps.length) {
+                    overlay.classList.remove('show');
+                    return;
+                }
+                textEl.innerText = steps[idx];
+                textEl.style.animation = 'none';
+                void textEl.offsetWidth;
+                textEl.style.animation = 'countPop 0.8s ease-out forwards';
+                idx++;
+                setTimeout(showNext, 900);
+            };
+            showNext();
+        }
+
+        // --- 使用者操作控制映射系統 ---
+        function parseControls() {
+            if (gameState !== 'playing' || !player || player.isDead || isPaused) return;
+
+            if (player.sharkRideTimer > 0 || player.sharkExplodeWarning > 0 || player.splashdownTimer > 0) {
+                player.vx = 0;
+                player.vy = 0;
+                if (player.sharkRideTimer > 0) {
+                    player.vx = Math.cos(player.sharkRideAngle) * player.baseSpeed * 2.8;
+                    player.vy = Math.sin(player.sharkRideAngle) * player.baseSpeed * 2.8;
+                }
+                return;
+            }
+
+            let moveX = 0, moveY = 0;
+
+            if (sticks.left.active) {
+                moveX = sticks.left.x;
+                moveY = sticks.left.y;
+            } else {
+                if (keys['w'] || keys['W']) moveY = -1;
+                if (keys['s'] || keys['S']) moveY = 1;
+                if (keys['a'] || keys['A']) moveX = -1;
+                if (keys['d'] || keys['D']) moveX = 1;
+                const len = Math.sqrt(moveX * moveX + moveY * moveY);
+                if (len > 0) { moveX /= len; moveY /= len; }
+            }
+
+            player.vx = moveX * player.speed;
+            player.vy = moveY * player.speed;
+
+            if (sticks.right.active) {
+                const shootAngle = Math.atan2(sticks.right.y, sticks.right.x);
+                player.angle = shootAngle;
+                if (player.classType === 'rifle' || player.classType === 'tank') {
+                    player.fireWeapon(shootAngle);
+                } else if (player.classType === 'sniper') {
+                    if (player.chargeProgress < 100 && player.shootCooldown === 0) {
+                        player.chargeProgress += 1.8;
+                        if (player.chargeProgress % 15 < 1) playSound('sniper_charge');
+                    }
+                }
+            } else {
+                if (player.classType === 'sniper' && player.chargeProgress >= 90) {
+                    player.fireWeapon(player.angle);
+                    player.chargeProgress = 0;
+                } else {
+                    player.chargeProgress = 0;
+                }
+            }
+
+            if (!sticks.right.active && canvas) {
+                const rect = canvas.getBoundingClientRect();
+                const mouseCanvasX = mouse.x - rect.left;
+                const mouseCanvasY = mouse.y - rect.top;
+                const mouseWorldX = mouseCanvasX + camX;
+                const mouseWorldY = mouseCanvasY + camY;
+                const angle = Math.atan2(mouseWorldY - player.y, mouseWorldX - player.x);
+
+                if (mouse.isDown) {
+                    player.angle = angle;
+                    if (player.classType === 'rifle' || player.classType === 'tank') {
+                        player.fireWeapon(angle);
+                    } else if (player.classType === 'sniper') {
+                        if (player.chargeProgress < 100 && player.shootCooldown === 0) {
+                            player.chargeProgress += 1.8;
+                            if (player.chargeProgress % 15 < 1) playSound('sniper_charge');
+                        }
+                    } else if (player.classType === 'knife') {
+                        player.fireWeapon(angle);
+                    }
+                } else {
+                    if (player.classType === 'sniper' && player.chargeProgress >= 90) {
+                        player.fireWeapon(angle);
+                        player.chargeProgress = 0;
+                    }
+                }
+            }
+        }
+
+        // --- 觸控感應安全監聽 ---
+        function setupTouchControls() {
+            window.addEventListener('touchstart', (e) => {
+                if (gameState !== 'playing' || isPaused) return;
+                initAudio();
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    const t = e.changedTouches[i];
+                    const clientX = t.clientX, clientY = t.clientY;
+                    const screenWidth = window.innerWidth;
+                    if (clientX < 80 && clientY < 80) return;
+                    if (clientX < screenWidth / 2 && !sticks.left.active) {
+                        sticks.left.active = true;
+                        sticks.left.startX = clientX;
+                        sticks.left.startY = clientY;
+                        sticks.left.curX = clientX;
+                        sticks.left.curY = clientY;
+                        sticks.left.id = t.identifier;
+                        if (sticks.left.element) {
+                            sticks.left.element.style.display = 'flex';
+                            sticks.left.element.style.left = (clientX - 60) + 'px';
+                            sticks.left.element.style.top = (clientY - 60) + 'px';
+                            updateKnob(sticks.left);
+                        }
+                    } else if (clientX >= screenWidth / 2 && !sticks.right.active) {
+                        const skillBtn = document.getElementById('btn-special');
+                        if (skillBtn && skillBtn.style.display !== 'none') {
+                            const btnRect = skillBtn.getBoundingClientRect();
+                            if (clientX > btnRect.left - 10 && clientX < btnRect.right + 10 &&
+                                clientY > btnRect.top - 10 && clientY < btnRect.bottom + 10) return;
+                        }
+                        sticks.right.active = true;
+                        sticks.right.startX = clientX;
+                        sticks.right.startY = clientY;
+                        sticks.right.curX = clientX;
+                        sticks.right.curY = clientY;
+                        sticks.right.id = t.identifier;
+                        if (sticks.right.element) {
+                            sticks.right.element.style.display = 'flex';
+                            sticks.right.element.style.left = (clientX - 60) + 'px';
+                            sticks.right.element.style.top = (clientY - 60) + 'px';
+                            updateKnob(sticks.right);
+                        }
+                    }
+                }
+            }, { passive: true });
+
+            window.addEventListener('touchmove', (e) => {
+                if (gameState !== 'playing' || isPaused) return;
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    const t = e.changedTouches[i];
+                    if (sticks.left.active && t.identifier === sticks.left.id) {
+                        sticks.left.curX = t.clientX;
+                        sticks.left.curY = t.clientY;
+                        updateKnob(sticks.left);
+                    }
+                    if (sticks.right.active && t.identifier === sticks.right.id) {
+                        sticks.right.curX = t.clientX;
+                        sticks.right.curY = t.clientY;
+                        updateKnob(sticks.right);
+                    }
+                }
+            }, { passive: true });
+
+            const handleTouchEnd = (e) => {
+                for (let i = 0; i < e.changedTouches.length; i++) {
+                    const t = e.changedTouches[i];
+                    if (sticks.left.active && t.identifier === sticks.left.id) {
+                        sticks.left.active = false;
+                        sticks.left.x = 0;
+                        sticks.left.y = 0;
+                        if (sticks.left.element) sticks.left.element.style.display = 'none';
+                    }
+                    if (sticks.right.active && t.identifier === sticks.right.id) {
+                        sticks.right.active = false;
+                        sticks.right.x = 0;
+                        sticks.right.y = 0;
+                        if (sticks.right.element) sticks.right.element.style.display = 'none';
+                    }
+                }
+            };
+            window.addEventListener('touchend', handleTouchEnd, { passive: true });
+            window.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+        }
+
+        function updateKnob(stick) {
+            if (!stick.element) return;
+            const dx = stick.curX - stick.startX;
+            const dy = stick.curY - stick.startY;
+            const distVal = Math.sqrt(dx * dx + dy * dy);
+            const maxRadius = 50;
+            let angle = Math.atan2(dy, dx);
+            let activeRadius = Math.min(distVal, maxRadius);
+            stick.x = (Math.cos(angle) * activeRadius) / maxRadius;
+            stick.y = (Math.sin(angle) * activeRadius) / maxRadius;
+            const knob = stick.element.firstElementChild;
+            if (knob) {
+                knob.style.transform = 'translate(' + (Math.cos(angle) * activeRadius) + 'px,' + (Math.sin(angle) * activeRadius) + 'px)';
+            }
+        }
+
+        function setupDesktopControls() {
+            window.addEventListener('keydown', (e) => {
+                keys[e.key] = true;
+                if ((e.key === ' ' || e.key === 'Shift') && player && gameState === 'playing' && !isPaused) {
+                    player.useSpecialSkill();
+                }
+            });
+            window.addEventListener('keyup', (e) => { keys[e.key] = false; });
+            window.addEventListener('mousemove', (e) => { mouse.x = e.clientX; mouse.y = e.clientY; });
+            window.addEventListener('mousedown', (e) => { if (e.button === 0) { mouse.isDown = true; initAudio(); } });
+            window.addEventListener('mouseup', (e) => { if (e.button === 0) mouse.isDown = false; });
+        }
+
+        function updateRespawnOverlay() {
+            if (player && player.isDead) {
+                const sec = Math.ceil(player.respawnTimer / 60);
+                const timerText = document.getElementById('respawn-timer');
+                if (timerText) timerText.innerText = sec;
+                const circle = document.getElementById('respawn-circle');
+                if (circle) {
+                    const progress = player.respawnTimer / 180;
+                    circle.style.strokeDashoffset = (251.2 * (1 - progress)).toFixed(1);
+                }
+            }
+        }
+
+        function pauseGame() {
+            if (gameState !== 'playing') return;
+            initAudio();
+            isPaused = true;
+            document.getElementById('pause-overlay').classList.remove('hidden');
+            document.getElementById('pause-overlay').classList.add('flex');
+            document.getElementById('btn-pause').style.display = 'none';
+            if (scoreUpdateInterval) clearInterval(scoreUpdateInterval);
+        }
+
+        function resumeGame() {
+            isPaused = false;
+            document.getElementById('pause-overlay').classList.remove('flex');
+            document.getElementById('pause-overlay').classList.add('hidden');
+            document.getElementById('btn-pause').style.display = 'flex';
+            scoreUpdateInterval = setInterval(calculateScores, 500);
+        }
+
+        function restartGame() {
+            isPaused = false;
+            document.getElementById('pause-overlay').classList.remove('flex');
+            document.getElementById('pause-overlay').classList.add('hidden');
+            document.getElementById('btn-pause').style.display = 'flex';
+            startGame();
+        }
+
+        function leaveGame() {
+            isPaused = false;
+            gameState = 'lobby';
+            document.getElementById('pause-overlay').classList.remove('flex');
+            document.getElementById('pause-overlay').classList.add('hidden');
+            document.getElementById('btn-pause').style.display = 'flex';
+            if (timerInterval) clearInterval(timerInterval);
+            if (scoreUpdateInterval) clearInterval(scoreUpdateInterval);
+            document.getElementById('lobby-screen').style.display = 'flex';
+            setTimeout(() => { document.getElementById('lobby-screen').style.opacity = '1'; }, 50);
+            drawScene();
+        }
+
+        function updateSkillButtonUI() {
+            const overlay = document.getElementById('skill-cooldown-overlay');
+            if (!overlay) return;
+            if (player && player.skillCooldown > 0) {
+                overlay.style.display = 'flex';
+                overlay.innerText = Math.ceil(player.skillCooldown / 60) + 's';
+            } else {
+                overlay.style.display = 'none';
+            }
+        }
+
+        function setupSkillButton() {
+            const btn = document.getElementById('btn-special');
+            if (!btn) return;
+            const triggerSkill = (e) => {
+                e.stopPropagation();
+                if (player && !player.isDead && gameState === 'playing' && !isPaused) {
+                    player.useSpecialSkill();
+                }
+            };
+            btn.addEventListener('touchstart', triggerSkill, { passive: false });
+            btn.addEventListener('click', triggerSkill);
+        }
+
+        function updateTimerUI() {
+            const min = Math.floor(gameTime / 60).toString().padStart(2, '0');
+            const sec = (gameTime % 60).toString().padStart(2, '0');
+            document.querySelectorAll('#game-timer').forEach(el => { el.innerText = min + ':' + sec; });
+        }
+
+        function startGame() {
+            initAudio();
+            isPaused = false;
+            const lobby = document.getElementById('lobby-screen');
+            if (lobby) { lobby.style.opacity = '0'; setTimeout(() => { lobby.style.display = 'none'; }, 300); }
+            const skillLabel = document.getElementById('skill-btn-name');
+            if (skillLabel) skillLabel.innerText = CLASS_PROFILES[selectedClassType].skillName;
+            gameState = 'playing';
+            stats = { kills: 0, deaths: 0 };
+            bullets = []; particles = []; missiles = []; beams = [];
+            initObstacles();
+            initInkGrid();
+            initInkCanvas();
+            rebuildTopBarUI();
+
+            entities = [];
+
+            if (isOnline) {
+                // 多人模式：不建立 bot entities，等待伺服器發送 game_state
+                player = new Character(150, 150, 'red', selectedClassType, false, myNickname || '玩家您');
+                entities.push(player);
+                // 透過 socket 告知伺服器玩家已就緒
+                if (socket && socket.connected) {
+                    socket.emit('player_ready', {
+                        nickname: myNickname || document.getElementById('nickname-input').value || '玩家',
+                        classType: selectedClassType
+                    });
+                }
+            } else {
+                const classesList = ['rifle', 'tank', 'sniper', 'knife'];
+
+                if (currentMode === 'quad') {
+                    player = new Character(150, 150, 'red', selectedClassType, false, '玩家您');
+                    entities.push(player);
+                    entities.push(new Character(130, 200, 'red', classesList.filter(c => c !== selectedClassType)[Math.floor(Math.random()*3)], true, '紅隊盟友'));
+                    entities.push(new Character(WORLD_WIDTH - 150, 150, 'blue', 'rifle', true, '藍隊精英A'));
+                    entities.push(new Character(WORLD_WIDTH - 130, 200, 'blue', 'knife', true, '藍隊精英B'));
+                    entities.push(new Character(150, WORLD_HEIGHT - 150, 'green', 'tank', true, '綠隊重裝A'));
+                    entities.push(new Character(130, WORLD_HEIGHT - 200, 'green', 'sniper', true, '綠隊幽靈B'));
+                    entities.push(new Character(WORLD_WIDTH - 150, WORLD_HEIGHT - 150, 'yellow', 'knife', true, '黃隊神速A'));
+                    entities.push(new Character(WORLD_WIDTH - 130, WORLD_HEIGHT - 200, 'yellow', 'rifle', true, '黃隊尖兵B'));
+                } else {
+                    player = new Character(150, WORLD_HEIGHT / 2, 'red', selectedClassType, false, '玩家您');
+                    entities.push(player);
+                    let teamSize = 2;
+                    if (currentMode === '3v3') teamSize = 3;
+                    if (currentMode === '4v4') teamSize = 4;
+                    for (let i = 1; i < teamSize; i++) {
+                        const botClass = classesList[(classesList.indexOf(selectedClassType) + i) % 4];
+                        entities.push(new Character(120, WORLD_HEIGHT / 2 - 120 + i*80, 'red', botClass, true, '紅隊隊友 ' + i));
+                    }
+                    for (let i = 0; i < teamSize; i++) {
+                        const botClass = classesList[i % 4];
+                        entities.push(new Character(WORLD_WIDTH - 150, WORLD_HEIGHT / 2 - 120 + i*80, 'blue', botClass, true, '藍隊對手 ' + (i+1)));
+                    }
+                }
+            }
+
+            entities.forEach(ent => { ent.lastX = ent.x; ent.lastY = ent.y; });
+
+            gameTime = 180;
+            updateTimerUI();
+            if (timerInterval) clearInterval(timerInterval);
+            timerInterval = setInterval(() => {
+                if (isPaused) return;
+                gameTime--;
+                updateTimerUI();
+                if (gameTime <= 0) endGame();
+            }, 1000);
+
+            if (scoreUpdateInterval) clearInterval(scoreUpdateInterval);
+            scoreUpdateInterval = setInterval(calculateScores, 500);
+            requestAnimationFrame(updateGame);
+        }
+
+        function endGame() {
+            gameState = 'gameover';
+            clearInterval(timerInterval);
+            clearInterval(scoreUpdateInterval);
+            calculateScores();
+
+            const board = document.getElementById('final-scoreboard-container');
+            if (board) {
+                if (currentMode === 'quad') {
+                    const arr = [
+                        { team: 'red', val: parseFloat(scorePercent.red), color: 'text-rose-400', name: '紅隊 (我方)' },
+                        { team: 'blue', val: parseFloat(scorePercent.blue), color: 'text-cyan-400', name: '藍隊 (右上)' },
+                        { team: 'green', val: parseFloat(scorePercent.green), color: 'text-emerald-400', name: '綠隊 (左下)' },
+                        { team: 'yellow', val: parseFloat(scorePercent.yellow), color: 'text-amber-400', name: '黃隊 (右下)' }
+                    ].sort((a,b) => b.val - a.val);
+                    board.innerHTML = '<h3 class="text-white text-lg font-bold mb-3 border-b border-slate-800 pb-2">四隊割據終局排名</h3><div class="space-y-3">' +
+                        arr.map((item, index) => '<div class="flex justify-between items-center text-sm"><span class="font-bold flex items-center"><span class="w-5 h-5 rounded-full flex items-center justify-center bg-slate-800 text-[10px] mr-2">' + (index+1) + '</span><span class="' + item.color + '">' + item.name + '</span></span><span class="font-black text-white">' + item.val + '%</span></div>').join('') + '</div>';
+                    const title = document.getElementById('result-title');
+                    if (title) {
+                        if (arr[0].team === 'red') { title.innerText = 'VICTORY !!'; title.className = 'text-5xl font-black tracking-widest text-emerald-400 animate-pulse'; }
+                        else { title.innerText = 'DEFEAT...'; title.className = 'text-5xl font-black tracking-widest text-rose-500'; }
+                    }
+                } else {
+                    board.innerHTML = '<div class="w-full bg-slate-800 h-8 rounded-full overflow-hidden flex shadow-inner mb-4"><div class="bg-rose-500 h-full" style="width:' + scorePercent.red + '%"></div><div class="bg-cyan-500 h-full" style="width:' + scorePercent.blue + '%"></div></div><div class="flex justify-between items-center text-white"><div class="flex flex-col"><span class="text-sm text-rose-400 font-bold">我方紅隊</span><span class="text-3xl font-black text-rose-500">' + scorePercent.red + '%</span></div><div class="text-xl font-bold text-slate-500">VS</div><div class="flex flex-col text-right"><span class="text-sm text-cyan-400 font-bold">敵方藍隊</span><span class="text-3xl font-black text-cyan-500">' + scorePercent.blue + '%</span></div></div>';
+                    const title = document.getElementById('result-title');
+                    if (title) {
+                        if (parseFloat(scorePercent.red) > parseFloat(scorePercent.blue)) { title.innerText = 'VICTORY !!'; title.className = 'text-5xl font-black tracking-widest text-emerald-400 animate-pulse'; }
+                        else { title.innerText = 'DEFEAT...'; title.className = 'text-5xl font-black tracking-widest text-rose-500'; }
+                    }
+                }
+            }
+            document.getElementById('stat-kills').innerText = stats.kills;
+            document.getElementById('stat-deaths').innerText = stats.deaths;
+            const goScreen = document.getElementById('gameover-screen');
+            if (goScreen) { goScreen.classList.remove('hidden'); goScreen.classList.add('flex'); }
+        }
+
+        function resetToLobby() {
+            const goScreen = document.getElementById('gameover-screen');
+            if (goScreen) { goScreen.classList.remove('flex'); goScreen.classList.add('hidden'); }
+            const lobby = document.getElementById('lobby-screen');
+            if (lobby) { lobby.style.display = 'flex'; setTimeout(() => { lobby.style.opacity = '1'; }, 50); }
+            gameState = 'lobby';
+        }
+
+        // --- 核心遊戲循環 ---
+        function updateGame() {
+            if (gameState !== 'playing') return;
+            if (isPaused) { drawScene(); requestAnimationFrame(updateGame); return; }
+            parseControls();
+            entities.forEach(ent => ent.update());
+            updateBullets();
+            updateMissiles();
+            updateParticles();
+            updateRespawnOverlay();
+            updateSkillButtonUI();
+
+            // 多人模式：每幀發送玩家輸入到伺服器
+            if (isOnline && socket && socket.connected && player && !player.isDead) {
+                const moveX = player.vx / (player.speed || 1);
+                const moveY = player.vy / (player.speed || 1);
+                socket.emit('player_input', {
+                    moveX: moveX,
+                    moveY: moveY,
+                    aimAngle: player.angle || 0,
+                    isFiring: mouse.isDown || sticks.right.active,
+                    useSkill: false
+                });
+            }
+
+            drawScene();
+
+            // 多人模式：繪製遠端玩家
+            if (isOnline && ctx && Object.keys(remotePlayers).length > 0) {
+                for (const [pid, rp] of Object.entries(remotePlayers)) {
+                    if (!rp || rp.isDead) continue;
+                    const sx = rp.x - camX;
+                    const sy = rp.y - camY;
+                    ctx.save();
+                    ctx.globalAlpha = 0.75;
+                    // 根據隊伍繪製圓形
+                    ctx.beginPath();
+                    ctx.arc(sx, sy, 22, 0, Math.PI * 2);
+                    ctx.fillStyle = rp.team === 'red' ? '#f43f5e' : rp.team === 'blue' ? '#06b6d4' : rp.team === 'green' ? '#10b981' : '#f59e0b';
+                    ctx.fill();
+                    ctx.strokeStyle = 'white';
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                    // 繪製方向指示
+                    ctx.beginPath();
+                    ctx.moveTo(sx, sy);
+                    ctx.lineTo(sx + Math.cos(rp.angle || 0) * 30, sy + Math.sin(rp.angle || 0) * 30);
+                    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    // 頭頂顯示名稱
+                    ctx.fillStyle = 'white';
+                    ctx.font = 'bold 12px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(rp.name || '未知', sx, sy - 30);
+                    // 顯示血量
+                    ctx.fillStyle = rp.hp > 50 ? '#4ade80' : rp.hp > 25 ? '#fbbf24' : '#ef4444';
+                    ctx.font = '10px sans-serif';
+                    ctx.fillText('HP: ' + Math.ceil(rp.hp || 0), sx, sy - 16);
+                    ctx.restore();
+                }
+            }
+
+            requestAnimationFrame(updateGame);
+        }
+
+        // --- 安全加載入口 ---
+        window.onload = function() {
+            canvas = document.getElementById('gameCanvas');
+            if (!canvas) return;
+            ctx = canvas.getContext('2d');
+            inkCanvas = document.createElement('canvas');
+            inkCanvas.width = WORLD_WIDTH;
+            inkCanvas.height = WORLD_HEIGHT;
+            inkCtx = inkCanvas.getContext('2d');
+            obstacles = [];
+            entities = [];
+            bullets = [];
+            particles = [];
+            beams = [];
+            missiles = [];
+            initInkGrid();
+            sticks.left.element = document.getElementById('joystick-left');
+            sticks.right.element = document.getElementById('joystick-right');
+            setupTouchControls();
+            setupDesktopControls();
+            setupSkillButton();
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            initObstacles();
+            initInkCanvas();
+            drawScene();
+            document.addEventListener('gesturestart', function (e) { if (e.cancelable) e.preventDefault(); });
+        };
+    </script>
+</body>
+</html>
