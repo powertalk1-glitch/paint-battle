@@ -18,12 +18,20 @@ function generateRoomId() {
 }
 
 class GameRoom {
-    constructor(id) {
+    constructor(id, password = '') {
         this.id = id;
+        this.password = password;      // 房間密碼（空字串 = 無密碼）
         this.players = [];            // 儲存 Player 實例的陣列
         this.gameInProgress = false;   // 遊戲是否進行中
         this.hostId = null;           // 房主的 socket.id
         this.gameLoop = null;         // 該房間獨立的 GameLoop 實例
+    }
+
+    /**
+     * 驗證房間密碼
+     */
+    checkPassword(inputPwd) {
+        return this.password === '' || this.password === inputPwd;
     }
 
     /**

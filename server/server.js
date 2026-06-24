@@ -47,7 +47,8 @@ io.on('connection', (socket) => {
      */
     socket.on('join_room', (data) => {
         try {
-            let { roomId, playerName, classType } = data;
+            let { roomId, playerName, classType, password } = data;
+            password = password || '';
             playerName = playerName || '未命名玩家';
             classType = classType || 'rifle';
 
@@ -58,22 +59,27 @@ io.on('connection', (socket) => {
                 const targetId = roomId.trim().toUpperCase();
                 if (rooms.has(targetId)) {
                     room = rooms.get(targetId);
+                    // 加入現有房間 → 驗證密碼
+                    if (!room.checkPassword(password)) {
+                        socket.emit('error', { message: '❌ 房間密碼錯誤！' });
+                        return;
+                    }
                 } else {
-                    // 若房號不存在，主動為其建立該 ID 的房間 (友善設計)
-                    room = new GameRoom(targetId);
+                    // 建立指定 ID 的房間，並設密碼
+                    room = new GameRoom(targetId, password);
                     rooms.set(targetId, room);
-                    console.log(`[房間] 建立指定房號房間：${targetId}`);
+                    console.log(`[房間] 建立指定房號房間：${targetId}${password ? '（已設定密碼）' : ''}`);
                 }
             } else {
-                // 未指定房號，隨機生成一個不存在的 4 碼 ID
+                // 隨機 ID 建立房間（可選密碼）
                 let newId;
                 do {
                     newId = generateRoomId();
                 } while (rooms.has(newId));
                 
-                room = new GameRoom(newId);
+                room = new GameRoom(newId, password);
                 rooms.set(newId, room);
-                console.log(`[房間] 建立隨機房號房間：${newId}`);
+                console.log(`[房間] 建立隨機房號房間：${newId}${password ? '（已設定密碼）' : ''}`);
             }
 
             // 2. 將玩家加入該房間

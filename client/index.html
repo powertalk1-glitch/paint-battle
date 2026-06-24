@@ -209,6 +209,10 @@
                             <input type="text" id="room-id-input" class="online-input" value="" placeholder="輸入房間 ID">
                         </div>
                     </div>
+                    <div class="space-y-1 text-left">
+                        <label class="text-xs text-slate-400">🔒 房間密碼（選填，無密碼則留空）</label>
+                        <input type="text" id="room-pwd-input" class="online-input" value="" placeholder="設定/輸入房間密碼">
+                    </div>
                     <div class="flex gap-2 justify-center">
                         <button onclick="createRoom()" class="online-btn bg-emerald-600 text-white px-6">創建房間</button>
                         <button onclick="joinRoom()" class="online-btn bg-cyan-600 text-white px-6">加入房間</button>
@@ -440,6 +444,11 @@
                     setConnectionStatus('disconnected');
                     document.getElementById('btn-disconnect').classList.add('hidden');
                 });
+                // 伺服器業務錯誤（密碼錯誤等）
+                socket.on('error', (data) => {
+                    alert(data.message || '發生錯誤');
+                    setConnectionStatus('disconnected');
+                });
                 // 成功加入房間
                 socket.on('room_joined', (data) => {
                     myPlayerId = data.playerId;
@@ -575,13 +584,15 @@
                 connectToServer(url);
             }
             const roomId = document.getElementById('room-id-input').value || '';
+            const password = document.getElementById('room-pwd-input')?.value || '';
             myNickname = document.getElementById('nickname-input').value || '玩家';
             setTimeout(() => {
                 if (socket && socket.connected) {
                     socket.emit('join_room', {
                         roomId: roomId,
                         playerName: myNickname,
-                        classType: selectedClassType || 'rifle'
+                        classType: selectedClassType || 'rifle',
+                        password: password
                     });
                 }
             }, 500);
